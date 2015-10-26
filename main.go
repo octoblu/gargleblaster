@@ -12,7 +12,7 @@ import (
 
 // Job stores a job
 type Job struct {
-  ResponseUUID string `json:"responseUuid"`
+  ResponseID string `json:"responseId"`
 }
 
 func main() {
@@ -36,8 +36,6 @@ func main() {
 }
 
 func getJob(redisConn redis.Conn, timeout int) (*Job, error) {
-  var job Job
-
   result,err := redisConn.Do("BRPOP", "meshblu:authenticate:queue", 100)
   if err != nil {
     return nil, err
@@ -48,10 +46,17 @@ func getJob(redisConn redis.Conn, timeout int) (*Job, error) {
   }
 
   results := result.([]interface{})
-  jobBytes := results[1].([]byte)
+  requestBytes := results[1].([]byte)
 
-  err = json.Unmarshal(jobBytes, &job)
-  return &job, err
+  var request []Job
+
+  err = json.Unmarshal(requestBytes, &request)
+  if err != nil {
+    return nil, err
+  }
+
+  metadata := request[0]
+  return &metadata, nil
 }
 
 func doJob(redisConn redis.Conn, job *Job, authenticated string) error {
@@ -60,8 +65,8 @@ func doJob(redisConn redis.Conn, job *Job, authenticated string) error {
     randIndex := rand.Intn(len(list))
     authenticated = list[randIndex]
   }
-  key := fmt.Sprintf("meshblu:authenticate:%v", job.ResponseUUID)
-  value := fmt.Sprintf(`[null, {"authenticated": %v}]`, authenticated)
+  key := fmt.Sprintf("meshblu:authenticate:%v", job.ResponseID)
+  value := fmt.Sprintf(`[{"responseId": "` + job.ResponseID + `", "code": 200, "status": "OK"}, {"authenticated": %v}]`, authenticated)
   _,err := redisConn.Do("LPUSH", key, value)
   return err
 }
@@ -83,7 +88,7 @@ func doNothing(context *cli.Context) {
       continue
     }
 
-    log.Printf("Got a job: %v", job.ResponseUUID)
+    log.Printf("Got a job: %v", job.ResponseID)
 
     err = doJob(redisConn, job, context.String("authenticated"))
     if err != nil {
