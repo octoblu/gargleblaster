@@ -10,8 +10,14 @@ import (
   "github.com/garyburd/redigo/redis"
 )
 
-// Job stores a job
-type Job struct {
+// Request stores Request
+type Request struct {
+  Key string
+  Metadata Metadata
+}
+
+// Metadata stores Metadata
+type Metadata struct {
   ResponseID string `json:"responseId"`
 }
 
@@ -35,7 +41,7 @@ func main() {
   app.Run(os.Args)
 }
 
-func getJob(redisConn redis.Conn, timeout int) (*Job, error) {
+func getRequest(redisConn redis.Conn, timeout int) (*Request, error) {
   result,err := redisConn.Do("BRPOP", "meshblu:authenticate:queue", 100)
   if err != nil {
     return nil, err
@@ -46,28 +52,41 @@ func getJob(redisConn redis.Conn, timeout int) (*Job, error) {
   }
 
   results := result.([]interface{})
-  requestBytes := results[1].([]byte)
+  requestKey := results[1].(string)
 
-  var request []Job
+  metadataBytes,err := redisConn.Do("HGET", requestKey, "request:metadata")
 
-  err = json.Unmarshal(requestBytes, &request)
+  var metadata Metadata
+
+  err = json.Unmarshal(metadataBytes.([]byte), &metadata)
   if err != nil {
     return nil, err
   }
 
-  metadata := request[0]
-  return &metadata, nil
+  return &Request{Key:requestKey, Metadata:metadata}, nil
 }
 
-func doJob(redisConn redis.Conn, job *Job, authenticated string) error {
+func responseToRequest(redisConn redis.Conn, request *Request, authenticated string) error {
+  var err error
   if authenticated == "random" {
     list := []string{"true", "false"}
     randIndex := rand.Intn(len(list))
     authenticated = list[randIndex]
   }
-  key := fmt.Sprintf("meshblu:authenticate:%v", job.ResponseID)
-  value := fmt.Sprintf(`[{"responseId": "` + job.ResponseID + `", "code": 200, "status": "OK"}, {"authenticated": %v}]`, authenticated)
-  _,err := redisConn.Do("LPUSH", key, value)
+
+  metadataStr := fmt.Sprintf(`{"responseId": "%v", "code": 200, "status": "OK"}`, request.Metadata.ResponseID)
+  dataStr := fmt.Sprintf(`{"authenticated": %v}`, authenticated)
+
+  responseKey := fmt.Sprintf(`meshblu:internal:authenticate:%v`, request.Metadata.ResponseID)
+  _,err = redisConn.Do("HSET", request.Key, "response:metadata", metadataStr)
+  if err == nil {
+    return err
+  }
+  _,err = redisConn.Do("HSET", request.Key, "response:data", dataStr)
+  if err == nil {
+    return err
+  }
+  _,err = redisConn.Do("LPUSH", responseKey, request.Key)
   return err
 }
 
@@ -80,19 +99,19 @@ func doNothing(context *cli.Context) {
 
   for {
     log.Print("Waiting for a job")
-    job, err := getJob(redisConn, context.Int("timeout"))
+    request, err := getRequest(redisConn, context.Int("timeout"))
     if err != nil {
-      log.Fatalf("getJob error: %v", err.Error())
+      log.Fatalf("getRequest error: %v", err.Error())
     }
-    if job == nil {
+    if request == nil {
       continue
     }
 
-    log.Printf("Got a job: %v", job.ResponseID)
+    log.Printf("Got a job: %v", request.Key)
 
-    err = doJob(redisConn, job, context.String("authenticated"))
+    err = responseToRequest(redisConn, request, context.String("authenticated"))
     if err != nil {
-      log.Fatalf("doJob error: %v", err.Error())
+      log.Fatalf("responseToRequest error: %v", err.Error())
     }
   }
 }
