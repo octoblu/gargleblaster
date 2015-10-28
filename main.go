@@ -42,7 +42,7 @@ func main() {
 }
 
 func getRequest(redisConn redis.Conn, timeout int) (*Request, error) {
-  result,err := redisConn.Do("BRPOP", "meshblu:authenticate:queue", 100)
+  result,err := redisConn.Do("BRPOP", "meshblu:internal:authenticate:queue", 100)
   if err != nil {
     return nil, err
   }
@@ -52,7 +52,7 @@ func getRequest(redisConn redis.Conn, timeout int) (*Request, error) {
   }
 
   results := result.([]interface{})
-  requestKey := results[1].(string)
+  requestKey := string(results[1].([]byte))
 
   metadataBytes,err := redisConn.Do("HGET", requestKey, "request:metadata")
 
@@ -79,13 +79,14 @@ func responseToRequest(redisConn redis.Conn, request *Request, authenticated str
 
   responseKey := fmt.Sprintf(`meshblu:internal:authenticate:%v`, request.Metadata.ResponseID)
   _,err = redisConn.Do("HSET", request.Key, "response:metadata", metadataStr)
-  if err == nil {
+  if err != nil {
     return err
   }
   _,err = redisConn.Do("HSET", request.Key, "response:data", dataStr)
-  if err == nil {
+  if err != nil {
     return err
   }
+  log.Printf(`redisConn.Do("LPUSH", %v, %v)`, responseKey, request.Key)
   _,err = redisConn.Do("LPUSH", responseKey, request.Key)
   return err
 }
